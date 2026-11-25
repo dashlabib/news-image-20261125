@@ -1,149 +1,185 @@
 #!/usr/bin/env python3
-"""Copy the bundled 25 November front page out to the output location.
+"""Deliver the bundled front-page image for 25 November 2026.
 
-The picture lives in this directory as ``entry.png``.  This script
-confirms it is a whole PNG or JPEG within the size limits, then writes
-an exact copy to ``/output/entry.png`` (or to the directory named by
-``MAKEFUN_OUTPUT_DIR``, or to a path given with ``--output``).  It does
-no decoding, no re-encoding and no renaming of anything: the bytes that
-come out are the bytes that went in.
+The image itself lives next to this file as entry.png. This program
+does only three things, all offline and deterministic:
 
-Everything here is standard library.  No network, no clock, no random
-numbers are involved.
+* check that the bundled file really is a PNG or JPEG image, is no
+  larger than 1 MiB, and is no bigger than 1024 by 1024 pixels;
+* copy it byte for byte to the output location;
+* optionally report its SHA-256 digest, or only verify it.
+
+It uses nothing but the Python standard library. It makes no network
+calls, reads no clock, and uses no randomness, so repeated runs over
+the same bundled file always produce identical output.
 """
 
 import argparse
 import hashlib
 import os
+import struct
 import sys
 from pathlib import Path
 
-LIMIT_BYTES = 1048576
-LIMIT_SIDE = 1024
-NAME = "entry.png"
+MAX_BYTES = 1_048_576
+MAX_WIDTH = 1024
+MAX_HEIGHT = 1024
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+JPEG_MAGIC = b"\xff\xd8\xff"
+
+HERE = Path(__file__).resolve().parent
+BUNDLED = HERE / "entry.png"
+DEFAULT_OUTPUT_DIR = Path("/output")
 
 
 def fail(message):
-    """Print an error and stop with a non-zero status."""
-    print("error:", message, file=sys.stderr)
+    """Print a plain error to stderr and exit non-zero."""
+    print(f"error: {message}", file=sys.stderr)
     return 1
 
 
-def png_dims(blob):
-    """Width and height from the IHDR chunk of a PNG byte string."""
-    if len(blob) < 24 or blob[12:16] != b"IHDR":
-        raise ValueError("PNG has no usable IHDR chunk")
-    wide = int.from_bytes(blob[16:20], "big")
-    tall = int.from_bytes(blob[20:24], "big")
-    return wide, tall
+def sha256_of(path):
+    """Return the hex SHA-256 digest of a file's bytes."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        while True:
+            chunk = handle.read(65536)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
-def jpg_dims(blob):
-    """Width and height from the first frame segment of a JPEG."""
+def png_dimensions(data):
+    """Read width and height from a PNG's IHDR chunk, or None."""
+    if len(data) < 33:
+        return None
+    if data[:8] != PNG_MAGIC:
+        return None
+    if data[12:16] != b"IHDR":
+        return None
+    width, height = struct.unpack(">II", data[16:24])
+    return width, height
+
+
+def jpeg_dimensions(data):
+    """Scan JPEG markers for the first frame segment and read its size."""
+    if len(data) < 4 or data[:3] != JPEG_MAGIC:
+        return None
     pos = 2
-    frames = (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7,
-              0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF)
-    while pos + 3 < len(blob):
-        if blob[pos] != 0xFF:
-            raise ValueError("JPEG marker stream is broken")
-        while blob[pos + 1] == 0xFF:
-            pos += 1
-        marker = blob[pos + 1]
-        if marker == 0xD8:
+    while pos + 9 < len(data):
+        if data[pos] != 0xFF:
+            return None
+        marker = data[pos + 1]
+        # Standalone markers carry no length field; skip them.
+        if marker in (0xD8, 0xD9) or 0xD0 <= marker <= 0xD7:
             pos += 2
             continue
-        if marker in (0xD9, 0xDA):
-            break
-        size = int.from_bytes(blob[pos + 2:pos + 4], "big")
-        if size < 2 or pos + 2 + size > len(blob):
-            raise ValueError("JPEG segment runs past the end")
-        if marker in frames:
-            tall = int.from_bytes(blob[pos + 5:pos + 7], "big")
-            wide = int.from_bytes(blob[pos + 7:pos + 9], "big")
-            return wide, tall
-        pos += 2 + size
-    raise ValueError("JPEG has no frame segment")
+        length = struct.unpack(">H", data[pos + 2:pos + 4])[0]
+        if length < 2 or pos + length > len(data):
+            return None
+        # Start-of-frame markers (except the lossless/arithmetic ones
+        # this simple reader does not need) hold height then width.
+        if marker in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7,
+                      0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+            height, width = struct.unpack(
+                ">HH", data[pos + 5:pos + 9])
+            return width, height
+        pos += 2 + length
+    return None
 
 
-def check(blob):
-    """Validate the bundled bytes; return (format, width, height)."""
-    if len(blob) == 0:
-        raise ValueError("bundled picture is empty")
-    if len(blob) > LIMIT_BYTES:
-        raise ValueError(f"picture is {len(blob)} bytes, over the limit")
-    if blob[:8] == b"\x89PNG\r\n\x1a\n":
-        kind = "PNG"
-        wide, tall = png_dims(blob)
-        tail_ok = blob[-12:-8] == b"\x00\x00\x00\x00" and blob[-8:-4] == b"IEND"
-        if not tail_ok:
-            raise ValueError("PNG lacks its IEND chunk")
-    elif blob[:3] == b"\xff\xd8\xff":
-        kind = "JPEG"
-        wide, tall = jpg_dims(blob)
-        if blob[-2:] != b"\xff\xd9":
-            raise ValueError("JPEG lacks its end marker")
+def verify_image(path):
+    """Check the bundled file; return (width, height) or an error string."""
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        return None, f"cannot read bundled image {path}: {exc}"
+    if len(data) == 0:
+        return None, "bundled image is empty"
+    if len(data) > MAX_BYTES:
+        return None, (
+            f"bundled image is {len(data)} bytes, over the "
+            f"{MAX_BYTES} byte limit")
+    if data[:8] == PNG_MAGIC:
+        dimensions = png_dimensions(data)
+        if dimensions is None:
+            return None, "bundled PNG has no readable IHDR chunk"
+        if not data.rstrip(b"\x00").endswith(b"IEND\xaeB`\x82"):
+            return None, "bundled PNG looks truncated: no IEND trailer"
+    elif data[:3] == JPEG_MAGIC:
+        dimensions = jpeg_dimensions(data)
+        if dimensions is None:
+            return None, "bundled JPEG has no readable frame segment"
+        if not data.rstrip(b"\x00").endswith(b"\xff\xd9"):
+            return None, "bundled JPEG looks truncated: no end marker"
     else:
-        raise ValueError("picture is neither PNG nor JPEG")
-    if wide < 1 or tall < 1:
-        raise ValueError(f"picture dimensions {wide}x{tall} are invalid")
-    if wide > LIMIT_SIDE or tall > LIMIT_SIDE:
-        raise ValueError(f"picture is {wide}x{tall}, over the side limit")
-    return kind, wide, tall
+        return None, (
+            "bundled file is not a PNG or JPEG image "
+            "(bad magic bytes)")
+    width, height = dimensions
+    if width <= 0 or height <= 0:
+        return None, f"bundled image has invalid size {width}x{height}"
+    if width > MAX_WIDTH or height > MAX_HEIGHT:
+        return None, (
+            f"bundled image is {width}x{height}, over the "
+            f"{MAX_WIDTH}x{MAX_HEIGHT} limit")
+    return (width, height), None
 
 
-def options():
-    """Parse the command line."""
+def resolve_output(args):
+    """Work out where the copy goes: --output, env var, or /output."""
+    if args.output:
+        return Path(args.output)
+    env_dir = os.environ.get("MAKEFUN_OUTPUT_DIR")
+    if env_dir:
+        return Path(env_dir) / "entry.png"
+    return DEFAULT_OUTPUT_DIR / "entry.png"
+
+
+def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Check the bundled front page and copy it out.")
-    parser.add_argument("--verify-only", action="store_true",
-                        help="check the picture and write nothing")
-    parser.add_argument("--output", metavar="PATH", default=None,
-                        help="write the copy here instead of the default")
-    parser.add_argument("--digest", action="store_true",
-                        help="print the SHA-256 of the bundled picture")
-    return parser.parse_args()
+        description="Verify and deliver the bundled front-page image.")
+    parser.add_argument(
+        "--output", default=None,
+        help="write the copy to this path instead of /output/entry.png")
+    parser.add_argument(
+        "--verify-only", action="store_true",
+        help="only check the bundled image; write nothing")
+    parser.add_argument(
+        "--digest", action="store_true",
+        help="print the SHA-256 digest of the bundled image")
+    args = parser.parse_args(argv)
 
+    if not BUNDLED.exists():
+        return fail(f"bundled image not found: {BUNDLED}")
 
-def destination(explicit):
-    """Where the published copy belongs."""
-    if explicit:
-        return Path(explicit)
-    folder = os.environ.get("MAKEFUN_OUTPUT_DIR")
-    if folder:
-        return Path(folder) / "entry.png"
-    return Path("/output/entry.png")
+    dimensions, error = verify_image(BUNDLED)
+    if error is not None:
+        return fail(error)
+    width, height = dimensions
 
-
-def main():
-    """Verify the bundled picture, then publish it."""
-    args = options()
-    here = Path(__file__).resolve().parent
-    try:
-        blob = (here / NAME).read_bytes()
-    except OSError as err:
-        return fail(f"cannot read {NAME}: {err}")
-    try:
-        kind, wide, tall = check(blob)
-    except ValueError as err:
-        return fail(str(err))
-    print(f"verified: {kind} {wide}x{tall}, {len(blob)} bytes")
+    digest = sha256_of(BUNDLED)
+    print(f"verified: {BUNDLED.name} {width}x{height} "
+          f"{BUNDLED.stat().st_size} bytes sha256={digest}")
     if args.digest:
-        print("sha256:", hashlib.sha256(blob).hexdigest())
-        return 0
+        print(digest)
     if args.verify_only:
         return 0
-    target = destination(args.output)
+
+    target = resolve_output(args)
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(blob)
-        again = target.read_bytes()
-    except OSError as err:
-        return fail(f"cannot write {target}: {err}")
-    if hashlib.sha256(again).digest() != hashlib.sha256(blob).digest():
-        return fail("output does not match the bundled picture")
-    print(f"wrote: {target} ({len(blob)} bytes, byte-identical)")
+        target.write_bytes(BUNDLED.read_bytes())
+    except OSError as exc:
+        return fail(f"cannot write output {target}: {exc}")
+
+    # Read the copy back and confirm it is byte-identical.
+    if sha256_of(target) != digest:
+        return fail(f"output copy at {target} does not match the bundle")
+    print(f"wrote {target} ({width}x{height})")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

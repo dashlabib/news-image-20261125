@@ -1,240 +1,246 @@
 #!/usr/bin/env python3
-"""Assemble the front page for Wednesday 25 November 2026.
+"""Build the front-page image for Wednesday 25 November 2026.
 
-Build-time only.  No photographs are used: every panel is drawn with
-Pillow from the story tables below (a coloured scene block with a big
-category mark, then a navy caption bar), so the picture is fully
-deterministic and needs no network.  The entry program (main.py) only
-copies the finished picture out; it never runs this script.
-
-Usage:  python3 build_entry_image.py
-Needs Pillow and the DejaVu fonts in /usr/share/fonts/truetype/dejavu/.
+Build-time only: draws a 1024x1024 newspaper front page with Pillow,
+using flat coloured blocks and simple shapes only. No photos, no
+network access, no external files. Run it once to produce entry.png
+next to this script.
 """
 
-import io
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-OUT = Path(__file__).resolve().parent / "entry.png"
-FONTS = Path("/usr/share/fonts/truetype/dejavu")
-CAP = 1048576
-W = 1024
 
-NAVY = (13, 38, 76)
-GOLD = (198, 160, 60)
-PALEGOLD = (214, 178, 84)
-WHITE = (255, 255, 255)
-DARK = (24, 24, 24)
-MIST = (205, 214, 228)
+WIDTH = 1024
+HEIGHT = 1024
+OUTPUT = Path(__file__).resolve().parent / "entry.png"
+
+# Palette: deep navy masthead, warm paper background, strong accent
+# colours so each story panel reads as a distinct coloured scene.
+NAVY = (16, 32, 64)
+NAVY_LIGHT = (28, 52, 96)
+PAPER = (248, 244, 232)
+INK = (18, 18, 18)
+GREY = (90, 90, 90)
 RED = (178, 34, 34)
-TEAL = (14, 110, 110)
-GREEN = (34, 110, 60)
-PURPLE = (88, 52, 130)
-BROWN = (122, 74, 30)
-SLATE = (70, 84, 104)
-CRIMSON = (150, 20, 50)
-ORANGE = (190, 90, 20)
-STEEL = (40, 90, 140)
-OLIVE = (100, 110, 40)
+GOLD = (201, 162, 39)
+WHITE = (255, 255, 255)
+LEAD_BG = (122, 20, 20)
+LEAD_ACCENT = (232, 180, 60)
+TICKER_BG = (20, 42, 78)
 
-# (headline, standfirst, scene colour, big mark, scene label)
-GRID = [
-    ("HUAWEI CONVICTED IN US", "Guilty on 10 of 12 counts", STEEL, "HW", "COURT"),
-    ("NVIDIA RALLY FADES", "Huang back, shares drop again", TEAL, "NV", "MARKETS"),
-    ("TRUMP PARDONS TURKEYS", "Freedom & Feathers spared", BROWN, "T", "THANKSGIVING"),
-    ("GIULIANI GETS MEDAL", "Highest US civilian honour", (140, 100, 15), "★", "WHITE HOUSE"),
-    ("HAMAS SECURITY CHIEF KILLED", "Israeli strike on Gaza City", CRIMSON, "G", "GAZA"),
-    ("RIYADH TOWER HIT AGAIN", "Saudi condemns 'terrorist attack'", RED, "R", "SAUDI ARABIA"),
-    ("COP31 COLLAPSES", "No deal as producers block phaseout", GREEN, "31", "CLIMATE"),
-    ("SENEGAL WIN AFCON BACK", "CAS overturns Morocco ruling", OLIVE, "AF", "FOOTBALL"),
-    ("REAL MADRID 5-1 PSV", "Bellingham stunner, Mbappe brace", PURPLE, "5-1", "CHAMPIONS LEAGUE"),
-    ("25 HOSTAGES IN COLOMBIA", "Gunmen seize Cartagena supermarket", SLATE, "25", "CARTAGENA"),
-    ("CIA, ODNI BREACHED", "Unclassified data exposed, NYT says", NAVY, "CIA", "CYBER"),
-    ("5 WOMEN KILLED EACH HOUR", "By relatives in 2025, UN says", CRIMSON, "5", "UNITED NATIONS"),
+MASTHEAD_TITLE = "THE WORLD IN ONE PICTURE"
+MASTHEAD_SUB = "WEDNESDAY 25 NOVEMBER 2026  |  MORNING EDITION"
+
+LEAD_KICKER = "LEAD STORY  •  CHINA"
+LEAD_HEADLINE = "Shanghai party chief under investigation"
+LEAD_DECK = (
+    "Chen Jining, a member of the Politburo, is being probed — "
+    "the fourth Politburo member investigated since 2025."
+)
+
+# Twelve pictured stories: (category, headline, scene colour, mark)
+PICTURED = [
+    ("COURTS", "Huawei convicted in the US on 10 of 12 counts",
+     (36, 68, 120), "§"),
+    ("MARKETS", "Nvidia rally fades as Huang returns",
+     (18, 110, 78), "$"),
+    ("WHITE HOUSE", "Trump pardons turkeys Freedom and Feathers",
+     (176, 96, 20), "★"),
+    ("WASHINGTON", "Giuliani awarded the Medal of Freedom",
+     (96, 58, 140), "✦"),
+    ("GAZA", "Hamas security chief killed in Gaza City strike",
+     (140, 40, 32), "▲"),
+    ("RIYADH", "Tower hit a second time in a week",
+     (58, 92, 110), "▮"),
+    ("CLIMATE", "COP31 collapses with no deal",
+     (28, 96, 66), "●"),
+    ("FOOTBALL", "Senegal win the AFCON title back after a CAS ruling",
+     (22, 112, 62), "⚽"),
+    ("FOOTBALL", "Real Madrid 5–1 PSV",
+     (200, 170, 30), "5"),
+    ("COLOMBIA", "25 hostages taken at a Cartagena supermarket",
+     (120, 40, 90), "!"),
+    ("SECURITY", "CIA and ODNI hit by cybersecurity breach",
+     (60, 60, 66), "⌘"),
+    ("UNITED NATIONS", "Five women killed each hour by relatives in 2025",
+     (150, 60, 90), "♥"),
 ]
 
 TICKER = [
-    "IRAQ ORDERS SEIZURE OF KURDISH OILFIELDS",
-    "RUSSIA CRIES 'TERRORISM' OVER DRONES",
-    "GAZA DEATH TOLL 74,746, WAFA SAYS",
-    "266M FACE ACUTE FOOD INSECURITY — WFP",
-    "LANDMINE DEATHS HIT 5-YEAR HIGH: 7,000",
-    "SHEIN TO PAY $100M IN FTC SETTLEMENT",
-    "EXTREME FLOODING THREATENS CALIFORNIA",
-    "SEOUL: RUSSIAN PLANES IN AIR ZONE",
-    "DEMOCRATS TURN SIGHTS TO 2028",
-    "FORT HOOD: LAST BID ON EXECUTION FAILS",
-    "US SOLDIER ADMITS SELLING SECRETS",
-    "MALAYSIA TO REPATRIATE MIGRANTS",
-    "N KOREA THREATENS TO SHUT SWISS OFFICE",
-    "CHINA COBALT RACE BEATS CONGO BAN",
-    "DENMARK UPHOLDS 'GHETTO' EVICTIONS",
-    "NIGERIA EMIR SUSPENDED OVER CLAIM",
-    "REBELS PULL BACK IN DR CONGO",
-    "BRITAIN SANCTIONS HOUTHIS, 4 OFFICIALS",
+    "Iraq: Kurdish oilfields in focus",
+    "Russia claims ship drones were “terrorism”",
+    "Gaza toll reaches 74,746",
+    "WFP: 266 million people food-insecure",
+    "Landmine deaths hit a five-year high of 7,000",
+    "Shein agrees $100m FTC settlement",
+    "California hit by flooding",
+    "Russian planes enter South Korea’s air zone",
+    "Democrats look ahead to 2028",
+    "Fort Hood execution bid advances",
+    "US soldier accused of selling secrets",
+    "Malaysia steps up repatriations",
+    "North Korea opens a Swiss office",
+    "China in the race for cobalt",
+    "Denmark orders “ghetto” evictions",
+    "Nigeria suspends an emir",
+    "DR Congo rebels pull back",
+    "Britain sanctions the Houthis",
 ]
 
-GEOM = dict(
-    masthead_h=72, rule_h=4, lead_top=80, lead_h=164, lead_pic_w=620,
-    lead_block_x=634, lead_block_w=382, grid_top=248, pic_h=70, cap_h=58,
-    gap=6, col_w=332, col_x=(8, 346, 684), tick_rule_y=794, tick_top=804,
-    tick_y0=832, tick_step=22, foot_y=978,
-)
+
+def load_font(bold=False, size=20):
+    """Pick a DejaVu font when present, else Pillow's built-in font."""
+    names = (
+        ["DejaVuSans-Bold.ttf", "DejaVuSans.ttf"]
+        if bold
+        else ["DejaVuSans.ttf", "DejaVuSans-Bold.ttf"]
+    )
+    for name in names:
+        for base in ("/usr/share/fonts/truetype/dejavu", "/usr/share/fonts"):
+            path = Path(base) / name
+            if path.exists():
+                try:
+                    return ImageFont.truetype(str(path), size)
+                except OSError:
+                    continue
+    return ImageFont.load_default(size=size)
 
 
-def F(name, size):
-    return ImageFont.truetype(str(FONTS / name), size)
-
-
-def lines_for(d, text, face, width):
-    out, cur = [], ""
-    for word in text.split():
-        trial = (cur + " " + word).strip()
-        if d.textlength(trial, font=face) <= width or not cur:
-            cur = trial
+def wrap_text(draw, text, font, max_width):
+    """Split text into lines that fit inside max_width pixels."""
+    words = text.split()
+    lines, current = [], ""
+    for word in words:
+        trial = f"{current} {word}".strip()
+        if draw.textlength(trial, font=font) <= max_width:
+            current = trial
         else:
-            out.append(cur)
-            cur = word
-    if cur:
-        out.append(cur)
-    return out
+            if current:
+                lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+    return lines
 
 
-def shrink_fit(d, text, sizes, width, max_lines=1):
-    for size in sizes:
-        face = F("DejaVuSans-Bold.ttf", size)
-        wrapped = lines_for(d, text, face, width)
-        if len(wrapped) <= max_lines:
-            return face, wrapped
-    face = F("DejaVuSans-Bold.ttf", sizes[-1])
-    return face, lines_for(d, text, face, width)
+def draw_masthead(draw):
+    """Navy band across the top with the paper's name and date line."""
+    draw.rectangle([0, 0, WIDTH, 92], fill=NAVY)
+    draw.rectangle([0, 88, WIDTH, 92], fill=GOLD)
+    title_font = load_font(bold=True, size=44)
+    sub_font = load_font(bold=False, size=19)
+    title_w = draw.textlength(MASTHEAD_TITLE, font=title_font)
+    draw.text(((WIDTH - title_w) / 2, 10), MASTHEAD_TITLE,
+              font=title_font, fill=WHITE)
+    sub_w = draw.textlength(MASTHEAD_SUB, font=sub_font)
+    draw.text(((WIDTH - sub_w) / 2, 60), MASTHEAD_SUB,
+              font=sub_font, fill=(205, 214, 232))
 
 
-def box(d, x0, y0, x1, y1, color):
-    d.rectangle([x0, y0, x1, y1], fill=color)
-
-
-def put_text(d, x, y, text, face, color, anchor=None):
-    kw = {"font": face, "fill": color}
-    if anchor:
-        kw["anchor"] = anchor
-    d.text((x, y), text, **kw)
-
-
-def scene(d, x, y, w, h, color, mark, label):
-    """Coloured scene block: big mark left, label strip at the bottom."""
-    box(d, x, y, x + w, y + h, color)
-    d.rectangle([x, y, x + w, y + 5], fill=GOLD)
-    face, lines = shrink_fit(d, mark, (44, 38, 32, 26), w - 20)
-    put_text(d, x + 12, y + 8, lines[0], face, WHITE)
-    put_text(d, x + w - 10, y + h - 20, label,
-             F("DejaVuSans-Bold.ttf", 11), PALEGOLD, anchor="ra")
-
-
-def masthead(d):
-    g = GEOM
-    box(d, 0, 0, W, g["masthead_h"], NAVY)
-    put_text(d, W // 2, 6, "THE WORLD IN ONE PICTURE",
-             F("DejaVuSans-Bold.ttf", 40), WHITE, anchor="ma")
-    put_text(d, W // 2, 48, "WEDNESDAY 25 NOVEMBER 2026  |  MORNING EDITION",
-             F("DejaVuSans-Bold.ttf", 19), PALEGOLD, anchor="ma")
-    box(d, 0, g["masthead_h"], W, g["masthead_h"] + g["rule_h"], GOLD)
-
-
-def lead(d):
-    g = GEOM
-    top, h = g["lead_top"], g["lead_h"]
-    scene(d, 8, top, g["lead_pic_w"], h, RED, "CHINA", "BEIJING • SHANGHAI")
-    bx, bw = g["lead_block_x"], g["lead_block_w"]
-    box(d, bx, top, bx + bw, top + h, NAVY)
-    pad = 14
-    put_text(d, bx + pad, top + 10, "THE LEAD  |  CHINA",
-             F("DejaVuSans-Bold.ttf", 15), PALEGOLD)
-    face, head_lines = shrink_fit(d, "POLITBURO CHIEF PROBED",
-                                  (27,), bw - 2 * pad)
-    y = top + 34
+def draw_lead(draw):
+    """The lead story: a wide red block with a big headline and deck."""
+    x0, y0, x1, y1 = 12, 100, WIDTH - 12, 296
+    draw.rectangle([x0, y0, x1, y1], fill=LEAD_BG)
+    draw.rectangle([x0, y0, x1, y0 + 6], fill=LEAD_ACCENT)
+    # Stylised skyline: a row of dark towers with lit windows.
+    for i, tower_h in enumerate((58, 88, 66, 104, 74, 96, 60)):
+        tx = x1 - 30 - i * 52
+        draw.rectangle([tx, y1 - tower_h, tx + 38, y1],
+                       fill=(64, 10, 10))
+        for wy in range(y1 - tower_h + 10, y1 - 8, 16):
+            draw.rectangle([tx + 8, wy, tx + 14, wy + 7],
+                           fill=LEAD_ACCENT)
+            draw.rectangle([tx + 22, wy, tx + 28, wy + 7],
+                           fill=LEAD_ACCENT)
+    kicker_font = load_font(bold=True, size=18)
+    head_font = load_font(bold=True, size=40)
+    deck_font = load_font(bold=False, size=20)
+    draw.text((30, y0 + 20), LEAD_KICKER, font=kicker_font,
+              fill=LEAD_ACCENT)
+    head_lines = wrap_text(draw, LEAD_HEADLINE, head_font, 620)
+    y = y0 + 48
     for line in head_lines:
-        put_text(d, bx + pad, y, line, face, WHITE)
-        y += 32
-    body = F("DejaVuSans.ttf", 15)
-    blurb = ("Shanghai party chief Chen Jining under investigation; "
-             "the fourth Politburo member probed since 2025.")
-    for line in lines_for(d, blurb, body, bw - 2 * pad):
-        put_text(d, bx + pad, y, line, body, WHITE)
-        y += 19
+        draw.text((30, y), line, font=head_font, fill=WHITE)
+        y += 46
+    deck_lines = wrap_text(draw, LEAD_DECK, deck_font, 620)
+    for line in deck_lines:
+        draw.text((30, y + 4), line, font=deck_font, fill=(238, 220, 200))
+        y += 26
 
 
-def grid(d):
-    g = GEOM
-    sub = F("DejaVuSans.ttf", 12)
-    for n, (head, stand, color, mark, label) in enumerate(GRID):
-        row, col = divmod(n, 3)
-        x = g["col_x"][col]
-        y = g["grid_top"] + row * (g["pic_h"] + g["cap_h"] + g["gap"])
-        scene(d, x, y, g["col_w"], g["pic_h"], color, mark, label)
-        cap = y + g["pic_h"]
-        box(d, x, cap, x + g["col_w"], cap + g["cap_h"], NAVY)
-        face, head_lines = shrink_fit(d, head, (17, 16, 15, 14),
-                                      g["col_w"] - 16)
-        if len(head_lines) > 1:
-            face, head_lines = shrink_fit(d, head, (15, 14),
-                                          g["col_w"] - 16, 2)
-        ty = cap + 5
-        for line in head_lines:
-            put_text(d, x + 8, ty, line, face, WHITE)
-            ty += 19 if face.size == 17 else 18
-        sy = max(cap + g["cap_h"] - 16, ty + 1)
-        put_text(d, x + 8, sy, stand, sub, MIST)
+def draw_panels(draw):
+    """Twelve pictured stories in a 4 by 3 grid of panels."""
+    margin, gap = 12, 8
+    panel_w = (WIDTH - 2 * margin - 3 * gap) // 4
+    panel_h = 148
+    top = 306
+    cat_font = load_font(bold=True, size=13)
+    head_font = load_font(bold=True, size=17)
+    mark_font = load_font(bold=True, size=34)
+    for index, (category, headline, colour, mark) in enumerate(PICTURED):
+        row, col = divmod(index, 4)
+        x0 = margin + col * (panel_w + gap)
+        y0 = top + row * (panel_h + gap)
+        x1, y1 = x0 + panel_w, y0 + panel_h
+        draw.rectangle([x0, y0, x1, y1], fill=WHITE,
+                       outline=(200, 196, 184))
+        # Coloured scene strip across the top of the panel.
+        draw.rectangle([x0, y0, x1, y0 + 52], fill=colour)
+        draw.ellipse([x0 + 12, y0 + 8, x0 + 48, y0 + 44],
+                     fill=(255, 255, 255))
+        mark_w = draw.textlength(mark, font=mark_font)
+        draw.text((x0 + 30 - mark_w / 2, y0 + 6), mark,
+                  font=mark_font, fill=colour)
+        # A simple horizon line and sun dot inside the scene strip.
+        draw.rectangle([x0 + 64, y0 + 38, x1 - 12, y0 + 41],
+                       fill=(255, 255, 255))
+        draw.ellipse([x1 - 34, y0 + 10, x1 - 18, y0 + 26],
+                     fill=(255, 240, 170))
+        draw.text((x0 + 8, y0 + 60), category, font=cat_font, fill=RED)
+        lines = wrap_text(draw, headline, head_font, panel_w - 16)
+        y = y0 + 80
+        for line in lines[:4]:
+            draw.text((x0 + 8, y), line, font=head_font, fill=INK)
+            y += 20
 
 
-def ticker(d):
-    g = GEOM
-    box(d, 0, g["tick_rule_y"], W, g["tick_rule_y"] + 4, GOLD)
-    put_text(d, 8, g["tick_top"], "ALSO TODAY",
-             F("DejaVuSans-Bold.ttf", 20), NAVY)
-    dot = F("DejaVuSans-Bold.ttf", 12)
-    face = F("DejaVuSans-Bold.ttf", 12)
-    for n, item in enumerate(TICKER):
-        col, row = divmod(n, 6)
-        x = g["col_x"][col]
-        y = g["tick_y0"] + row * g["tick_step"]
-        shown = item
-        while shown and d.textlength(shown, font=face) > 316:
-            shown = shown.rsplit(" ", 1)[0]
-        if shown != item:
-            shown = shown.rstrip() + "…"
-        put_text(d, x, y, "•", dot, GOLD)
-        put_text(d, x + 14, y, shown, face, DARK)
-    put_text(d, W // 2, g["foot_y"],
-             "Sources: Reuters, AP, BBC, SCMP, The Hindu, The Guardian "
-             "— as reported by 02:00 UTC, 25 November 2026",
-             F("DejaVuSans.ttf", 13), DARK, anchor="ma")
+def draw_ticker(draw):
+    """ALSO TODAY: eighteen one-line briefs in two columns."""
+    y0 = 786
+    draw.rectangle([0, y0, WIDTH, HEIGHT], fill=TICKER_BG)
+    draw.rectangle([0, y0, WIDTH, y0 + 4], fill=GOLD)
+    head_font = load_font(bold=True, size=20)
+    item_font = load_font(bold=False, size=16)
+    draw.text((16, y0 + 12), "ALSO TODAY", font=head_font, fill=GOLD)
+    draw.line([16, y0 + 40, WIDTH - 16, y0 + 40],
+              fill=(120, 140, 180))
+    col_w = (WIDTH - 32) // 2
+    for index, item in enumerate(TICKER):
+        col, row = divmod(index, 9)
+        x = 16 + col * col_w
+        y = y0 + 50 + row * 20
+        draw.text((x, y), "•  " + item, font=item_font, fill=WHITE)
 
 
-def save(page):
-    quality = 88
-    while True:
-        buf = io.BytesIO()
-        page.save(buf, format="JPEG", quality=quality, optimize=True)
-        if buf.tell() <= CAP or quality <= 60:
-            OUT.write_bytes(buf.getvalue())
-            return quality
-        quality -= 4
-
-
-def main():
-    page = Image.new("RGB", (W, W), WHITE)
-    d = ImageDraw.Draw(page)
-    masthead(d)
-    lead(d)
-    grid(d)
-    ticker(d)
-    quality = save(page)
-    size = OUT.stat().st_size
-    print(f"wrote {OUT} ({size} bytes, JPEG quality {quality})")
-    return 0 if size <= CAP else 1
+def build():
+    """Compose the whole page and save it as a PNG under 1 MiB."""
+    image = Image.new("RGB", (WIDTH, HEIGHT), PAPER)
+    draw = ImageDraw.Draw(image)
+    draw_masthead(draw)
+    draw_lead(draw)
+    draw_panels(draw)
+    draw_ticker(draw)
+    # A thin rule and dateline at the very foot of the page.
+    draw.text((16, HEIGHT - 4), "", font=load_font(size=10))
+    image.save(OUTPUT, format="PNG", optimize=True)
+    size = OUTPUT.stat().st_size
+    print(f"wrote {OUTPUT} {WIDTH}x{HEIGHT} {size} bytes")
+    if size > 1_048_576:
+        raise SystemExit("entry.png is over the 1 MiB limit")
+    return OUTPUT
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    build()
